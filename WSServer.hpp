@@ -29,7 +29,7 @@ private:
 
     std::map<lws*, WSConnection> _connections;
 
-    char _tmpBuf[16384];
+    std::vector<uint8_t> _tmpBuf;
 
 public:
 
@@ -38,6 +38,8 @@ public:
         this->_port     = port;
         this->_certPath = certPath;
         this->_keyPath  = keyPath;
+
+        _tmpBuf.resize(2048);
     }
 
     ~WSServer( )
@@ -72,35 +74,46 @@ private:
 
     int handleHttpCallback(lws *wsi)
     {
-        // we can check callbacks and headers
-        int sz = lws_hdr_copy(wsi, _tmpBuf, sizeof(_tmpBuf), WSI_TOKEN_GET_URI);
+        // check callbacks and headers
+        auto hdrSize = lws_hdr_total_length(wsi, WSI_TOKEN_GET_URI);
+        if (_tmpBuf.size() < hdrSize + LWS_PRE) _tmpBuf.resize(hdrSize + LWS_PRE);
+
+        int sz = lws_hdr_copy(wsi, (char*)_tmpBuf.data(), (int)_tmpBuf.size(), WSI_TOKEN_GET_URI);
         if (sz > 0) {
-            std::string url(_tmpBuf, sz);
+            std::string url((char*)_tmpBuf.data(), sz);
 
             for (auto& h : _httpHandlers) {
                 if (h.first == "" || h.first == url) {
+
                     auto body = h.second(url);
 
                     unsigned char *start = (unsigned char *)&_tmpBuf[LWS_PRE],
                     *p = start,
-                    *end = (unsigned char *)&_tmpBuf[sizeof(_tmpBuf) - LWS_PRE - 1];
+                    *end = (unsigned char *)&_tmpBuf[_tmpBuf.size() - LWS_PRE - 1];
 
                     p = start;
 
-                    if (lws_add_http_common_headers(wsi, HTTP_STATUS_OK, "text/plain", body.size(), &p, end))
+                    if (lws_add_http_common_headers(wsi, HTTP_STATUS_OK, "text/plain", body.size(), &p, end)) {
                         return 1;
+                    }
 
-                    if (lws_finalize_write_http_header(wsi, start, &p, end))
+                    if (lws_finalize_write_http_header(wsi, start, &p, end)) {
                         return 1;
+                    }
 
-                    p = start;
+                    if (_tmpBuf.size() < body.size() + 1 + LWS_PRE) {
+                        _tmpBuf.resize(body.size() + 1 + LWS_PRE);
+                        start = (unsigned char *)&_tmpBuf[LWS_PRE];
+                    }
 
                     memcpy(start, body.data(), body.size());
-                    if (lws_write(wsi, start, body.size(), LWS_WRITE_HTTP_FINAL) != body.size())
+                    if (lws_write(wsi, start, body.size(), LWS_WRITE_HTTP_FINAL) != body.size()) {
                         return 1;
+                    }
 
-                    if (lws_http_transaction_completed(wsi))
+                    if (lws_http_transaction_completed(wsi)) {
                         return 1;
+                    }
 
                     return 0;
                 }
@@ -130,7 +143,7 @@ private:
 
             case LWS_CALLBACK_ESTABLISHED: {
                 // we can check request uri
-                // lws_hdr_copy(wsi, server->_tmpBuf, sizeof(server->_tmpBuf), WSI_TOKEN_GET_URI);
+                // lws_hdr_copy(wsi, (char*)_tmpBuf.data(), (int)_tmpBuf.size(), WSI_TOKEN_GET_URI);
 
                 server->_connections[wsi] = WSConnection();
                 server->onWsConnect(wsi);
@@ -138,17 +151,15 @@ private:
             break;
 
             case LWS_CALLBACK_SERVER_WRITEABLE: {
-//                int fd = lws_get_socket_fd(wsi);
-
                 while(!server->_connections[wsi].msgQueue.empty()) {
                     auto message = server->_connections[wsi].msgQueue.front();
                     auto msgLen = message.size();
 
-                    unsigned char *start = (unsigned char *)&server->_tmpBuf[LWS_PRE];
-
-                    if (sizeof(server->_tmpBuf) - LWS_PRE - 1 < msgLen) {
-                        throw std::runtime_error("Message size too big");
+                    if (server->_tmpBuf.size() < LWS_PRE + 1 + msgLen) {
+                        server->_tmpBuf.resize(LWS_PRE + 1 + msgLen);
                     }
+
+                    unsigned char *start = (unsigned char *)&server->_tmpBuf[LWS_PRE];
 
                     memcpy(start, message.c_str(), msgLen);
 
@@ -187,7 +198,7 @@ public:
 
         p.user = this;
         p.name = "";
-        p.per_session_data_size = 0; //sizeof(WSClient);
+        p.per_session_data_size = 0;
         p.callback = WSServer::callback;
 
         _protocols.push_back(p);
