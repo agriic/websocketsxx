@@ -2,10 +2,10 @@
 
 #include "../WSServer.hpp"
 
-class EvoServer : public agriic::WSServer
+class ServerExample : public agriic::WSServer
 {
 public:
-    EvoServer(int port) : agriic::WSServer(port)
+    ServerExample(int port) : agriic::WSServer(port)
     {}
 
 protected:
@@ -30,7 +30,7 @@ protected:
 
 int main()
 {
-    EvoServer ws(3221);
+    ServerExample ws(3221);
 
     ws.handleGet("/kuku", [](std::string url) {
         return "Hello";

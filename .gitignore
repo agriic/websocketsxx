@@ -1,2 +1,3 @@
 project.pbxproj
 tests/wstest.xcodeproj
+examples/wstest.xcodeproj
