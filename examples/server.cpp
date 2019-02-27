@@ -36,8 +36,6 @@ int main()
         return "Hello";
     });
 
-    ws.start();
-
     // run loop
 
     // ws.run(); or

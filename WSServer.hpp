@@ -14,6 +14,7 @@ class WSServer
 private:
 
     struct WSConnection {
+        bool closeRequested = false;
         std::list<std::string> msgQueue;
     };
 
@@ -60,6 +61,15 @@ public:
         auto it = _connections.find((lws*)id);
         if(it != _connections.end()) {
             _connections[(lws*)id].msgQueue.push_back(data);
+            lws_callback_on_writable((lws*)id);
+        }
+    }
+
+    void close(void* id)
+    {
+        auto it = _connections.find((lws*)id);
+        if(it != _connections.end()) {
+            _connections[(lws*)id].closeRequested = true;
             lws_callback_on_writable((lws*)id);
         }
     }
@@ -151,7 +161,9 @@ private:
             break;
 
             case LWS_CALLBACK_SERVER_WRITEABLE: {
-                while(!server->_connections[wsi].msgQueue.empty()) {
+                if (server->_connections[wsi].closeRequested) {
+                    return -1;
+                } else if (!server->_connections[wsi].msgQueue.empty()) {
                     auto message = server->_connections[wsi].msgQueue.front();
                     auto msgLen = message.size();
 
@@ -167,7 +179,6 @@ private:
                     if (charsSent != msgLen) return -1;
                     else server->_connections[wsi].msgQueue.pop_front();
                 }
-                lws_callback_on_writable(wsi);
             }
             break;
 
@@ -189,8 +200,6 @@ private:
         return 0;
     }
 
-public:
-
     void start()
     {
         struct lws_protocols p;
@@ -201,6 +210,7 @@ public:
         p.per_session_data_size = 0;
         p.callback = WSServer::callback;
 
+        _protocols.clear();
         _protocols.push_back(p);
         _protocols.push_back({ NULL, NULL, 0, 0 });
 
@@ -212,9 +222,9 @@ public:
         info.iface = NULL;
         info.protocols = _protocols.data();
 
-        if(!this->_certPath.empty() && !this->_keyPath.empty()) {
-            info.ssl_cert_filepath = this->_certPath.c_str();
-            info.ssl_private_key_filepath = this->_keyPath.c_str();
+        if(!_certPath.empty() && !_keyPath.empty()) {
+            info.ssl_cert_filepath = _certPath.c_str();
+            info.ssl_private_key_filepath = _keyPath.c_str();
         } else {
             info.ssl_cert_filepath = NULL;
             info.ssl_private_key_filepath = NULL;
@@ -228,10 +238,12 @@ public:
         info.ka_time = 60; // 60 seconds until connection is suspicious
         info.ka_probes = 10; // 10 probes after ^ time
         info.ka_interval = 10; // 10s interval for sending probes
-        this->_context = lws_create_context( &info );
-        if (!this->_context)
-            throw "libwebsocket init failed";
+        _context = lws_create_context( &info );
+        if (!_context)
+            throw std::runtime_error("Websocket init failed. Port taken?");
     }
+
+public:
 
     void run(int timeout = 10)
     {
@@ -242,8 +254,20 @@ public:
 
     void wait(int timeout = 10)
     {
-        if (lws_service(this->_context, timeout) < 0) {
-            std::cout << "Error polling for socket activity.\n";
+        if (!_context) {
+            start();
+        }
+
+        for (auto& c : _connections) {
+            if (c.second.closeRequested || !c.second.msgQueue.empty()) {
+                lws_callback_on_writable(c.first);
+            }
+        }
+
+        if (lws_service(_context, timeout) < 0) {
+            lws_context_destroy(_context);
+            _context = nullptr;
+            throw std::runtime_error("Error polling for socket activity");
         }
     }
 };
